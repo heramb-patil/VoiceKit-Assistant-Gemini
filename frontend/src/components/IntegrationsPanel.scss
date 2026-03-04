@@ -1,0 +1,154 @@
+// ── IntegrationsPanel ─────────────────────────────────────────────────────
+// Positioned bottom-left so it doesn't overlap TaskPanel (bottom-right).
+
+.integrations-panel {
+  position: fixed;
+  bottom: 80px;
+  left: 16px;
+  width: 220px;
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  color: #e0e0e0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.integrations-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #bbb;
+}
+
+.integrations-panel__collapse-btn {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 9px;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: color 0.15s;
+
+  &:hover {
+    color: #aaa;
+  }
+}
+
+.integrations-panel__list {
+  padding: 2px 0;
+}
+
+// ── Row ───────────────────────────────────────────────────────────────────
+
+.integrations-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  min-height: 30px;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.integrations-panel__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &--connected    { background: #66bb6a; }
+  &--disconnected { background: #555; }
+  &--pending      { background: #ffb74d; animation: dot-pulse 1.2s ease-in-out infinite; }
+  &--error        { background: #ef5350; }
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+.integrations-panel__name {
+  flex: 1;
+  font-size: 12px;
+  color: #ddd;
+  white-space: nowrap;
+}
+
+// ── Action area ───────────────────────────────────────────────────────────
+
+.integrations-panel__action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 110px;
+}
+
+.integrations-panel__label {
+  color: #888;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+  display: block;
+}
+
+.integrations-panel__btn {
+  background: rgba(79, 195, 247, 0.15);
+  color: #4fc3f7;
+  border: 1px solid rgba(79, 195, 247, 0.3);
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 2px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.5;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(79, 195, 247, 0.28);
+  }
+}
+
+.integrations-panel__pending {
+  color: #ffb74d;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.integrations-panel__cancel-btn,
+.integrations-panel__disconnect-btn {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+
+  &:hover {
+    color: #ef5350;
+  }
+}
+
+.integrations-panel__error-text {
+  color: #ef5350;
+  font-size: 10px;
+  white-space: nowrap;
+}

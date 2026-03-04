@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment — never commit secrets
+.env
+.env.local
+.env.production
+infra/.env.infra
+DEPLOY_URLS.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Database (shared with parent, but ignore local copies)
+*.db
+*.sqlite
+*.sqlite3
+
+# OAuth credentials and tokens — NEVER commit these
+backend/integrations/google/credentials/google_token.json
+backend/integrations/google/credentials/google_credentials.json
+backend/integrations/basecamp/credentials/basecamp_token.json
+backend/config/google_token.json
+backend/config/*.json
+**/*token*.json
+**/*credentials*.json
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/.env.local
+
+# Docker
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# AI-generated research outputs (runtime artifacts)
+backend/data/workspace/
+
+# Backup/alternate files
+frontend/src/App.original.tsx
+frontend/src/App.voicekit-added.scss

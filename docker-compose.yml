@@ -1,0 +1,70 @@
+version: '3.8'
+
+# VoiceKit SaaS — Local development stack
+# Runs backend + frontend together for testing before GCP deployment.
+#
+# Usage:
+#   cp backend/.env.example backend/.env
+#   cp frontend/.env.example frontend/.env.local
+#   # Fill in required values in both files, then:
+#   docker compose up
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: voicekit-saas-backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app
+      - saas-db:/app/data
+    env_file:
+      - ./backend/.env
+    environment:
+      - GEMINI_LIVE_HOST=0.0.0.0
+      - GEMINI_LIVE_PORT=8001
+      - GEMINI_LIVE_CORS_ORIGINS=http://localhost:3000
+      - GEMINI_LIVE_BACKEND_PUBLIC_URL=http://localhost:8001
+      - GEMINI_LIVE_FRONTEND_URL=http://localhost:3000
+      - GEMINI_LIVE_NOTIFICATION_WEBSOCKET_ENABLED=true
+      - GEMINI_LIVE_LOG_LEVEL=INFO
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    restart: unless-stopped
+    networks:
+      - voicekit-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/gemini-live/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: voicekit-saas-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      - REACT_APP_VOICEKIT_API_URL=http://localhost:8001
+    command: npm start
+    restart: unless-stopped
+    networks:
+      - voicekit-net
+    depends_on:
+      backend:
+        condition: service_healthy
+
+networks:
+  voicekit-net:
+    driver: bridge
+
+volumes:
+  saas-db:

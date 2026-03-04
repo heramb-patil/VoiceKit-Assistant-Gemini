@@ -1,0 +1,85 @@
+services:
+  # ── Backend (FastAPI on Cloud Run-style container) ─────────────────────────
+  - type: web
+    name: voicekit-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: Dockerfile
+    envVars:
+      # ── Set these in the Render dashboard (sync: false = secret) ───────────
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_LIVE_GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: BASECAMP_CLIENT_ID
+        sync: false
+      - key: BASECAMP_CLIENT_SECRET
+        sync: false
+      - key: BASECAMP_ACCOUNT_ID
+        sync: false
+      - key: BASECAMP_USER_AGENT
+        sync: false
+
+      # ── Auto-configured by Render ──────────────────────────────────────────
+      - key: GEMINI_LIVE_BACKEND_PUBLIC_URL
+        fromService:
+          name: voicekit-backend
+          type: web
+          property: host
+      - key: GEMINI_LIVE_DB_URL
+        fromDatabase:
+          name: voicekit-db
+          property: connectionString
+
+      # ── App config (edit directly here) ──────────────────────────────────
+      - key: GEMINI_LIVE_ALLOWED_DOMAIN
+        value: suzega.com        # Change to your domain, or delete to allow any Google account
+      - key: GEMINI_LIVE_FRONTEND_URL
+        value: https://voicekit-frontend.onrender.com   # Update after first deploy
+      - key: GEMINI_LIVE_CORS_ORIGINS
+        value: '["https://voicekit-frontend.onrender.com"]'
+      - key: GEMINI_LIVE_LOG_LEVEL
+        value: INFO
+
+  # ── Frontend (React → static site) ────────────────────────────────────────
+  - type: web
+    name: voicekit-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: build
+    envVars:
+      # ── Set in Render dashboard ────────────────────────────────────────────
+      - key: REACT_APP_GEMINI_API_KEY
+        sync: false
+      - key: REACT_APP_GOOGLE_CLIENT_ID
+        sync: false
+
+      # ── Points to the backend service ─────────────────────────────────────
+      # NOTE: Render resolves this at build time for static sites.
+      # After first backend deploy, update this with the real backend URL.
+      - key: REACT_APP_VOICEKIT_API_URL
+        fromService:
+          name: voicekit-backend
+          type: web
+          property: host
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /index.html
+        name: Cache-Control
+        value: no-cache
+
+databases:
+  - name: voicekit-db
+    databaseName: voicekit
+    plan: starter     # $7/month — 1 GB Postgres, suitable for 50 users

@@ -1,0 +1,21 @@
+# Don't copy these into the Docker image
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+.env
+.env.local
+
+# OAuth tokens — never bake into image
+integrations/google/credentials/google_token.json
+integrations/google/credentials/google_credentials.json
+integrations/basecamp/credentials/basecamp_token.json
+
+# Dev/test only
+tests/
+*.db
+*.sqlite
+
+# OS
+.DS_Store

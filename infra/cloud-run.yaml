@@ -1,0 +1,82 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: voicekit-backend
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to 0 when idle (cost savings for internal tool)
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "5"
+        # Cloud SQL connection (replace PROJECT:REGION:INSTANCE with yours)
+        # run.googleapis.com/cloudsql-instances: "PROJECT:REGION:voicekit-db"
+    spec:
+      serviceAccountName: voicekit-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: us-central1-docker.pkg.dev/PROJECT_ID/voicekit/backend:latest
+          ports:
+            - containerPort: 8001
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            # ── Core ──────────────────────────────────────────────────────────
+            - name: GEMINI_LIVE_BACKEND_PUBLIC_URL
+              value: "https://voicekit-backend-HASH-uc.a.run.app"
+            - name: GEMINI_LIVE_FRONTEND_URL
+              value: "https://YOUR_PROJECT.web.app"
+
+            # ── Secrets from Secret Manager ───────────────────────────────────
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: voicekit-gemini-api-key
+                  key: latest
+            - name: GEMINI_LIVE_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: voicekit-google-client-id
+                  key: latest
+            - name: GEMINI_LIVE_ALLOWED_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: voicekit-allowed-domain
+                  key: latest
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: voicekit-google-client-id
+                  key: latest
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: voicekit-google-client-secret
+                  key: latest
+
+            # ── Database (optional — remove if using SQLite) ──────────────────
+            # - name: GEMINI_LIVE_DB_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: voicekit-db-url
+            #       key: latest
+
+            # ── Basecamp (optional) ───────────────────────────────────────────
+            # - name: BASECAMP_CLIENT_ID
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: voicekit-basecamp-client-id
+            #       key: latest
+            # - name: BASECAMP_CLIENT_SECRET
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: voicekit-basecamp-client-secret
+            #       key: latest
+            # - name: BASECAMP_ACCOUNT_ID
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: voicekit-basecamp-account-id
+            #       key: latest
