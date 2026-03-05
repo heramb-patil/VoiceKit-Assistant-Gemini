@@ -334,51 +334,73 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
 
       // ── Fast/foreground calls ─────────────────────────────────────────────
       // Wait for real result, then send it AS the toolResponse.
-      // Never send an ACK placeholder — Gemini would treat the placeholder as
-      // the final answer and hallucinate over it.
+      // Each call runs in an isolated async closure with try/catch/finally so
+      // removeToolCall is ALWAYS called — even if the tool throws, the backend
+      // is down, or the send itself fails. Without this guarantee the state
+      // machine gets stuck in TOOL_EXECUTING and the session appears frozen.
       fastCalls.forEach((fc: any) => {
-        bridge.executeTool(fc.name, fc.args).then((result: any) => {
-          if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); removeToolCall(fc.id); return; }
+        (async () => {
+          let output = '';
 
-          let output: string;
-          if (result?.success === false) {
-            output = result?.error || `${fc.name} failed`;
-          } else {
-            const data = result?.result ?? result;
-            output = typeof data === 'string' ? data : JSON.stringify(data);
+          // Step 1 — execute; translate any failure into a plain string so
+          // Gemini always receives a well-formed, non-empty toolResponse.
+          try {
+            const result = await bridge.executeTool(fc.name, fc.args);
+            if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); return; }
+            if (result?.success === false) {
+              output = result.error || `${fc.name} is unavailable right now.`;
+            } else {
+              const data = result?.result ?? result;
+              const s = typeof data === 'string' ? data : JSON.stringify(data);
+              output = s || `${fc.name} completed.`;  // never send empty output
+            }
+          } catch (err: any) {
+            if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); return; }
+            output = `${fc.name} ran into a problem. Please try again.`;
+            console.error(`[ToolRouter] ${fc.name} threw:`, err);
           }
 
-          console.log(`[ToolRouter] Fast result ready for ${fc.name} (${output.length} chars)`);
-          coordinatorRef.current?.addResponse(fc.id, {
-            id: fc.id,
-            name: fc.name,
-            response: { output: output.substring(0, 3000) },
-          });
-          coordinatorRef.current?.forceFlush().then(() => removeToolCall(fc.id));
-        }).catch((err: any) => {
-          console.error(`[ToolRouter] ${fc.name} threw:`, err);
-          coordinatorRef.current?.addResponse(fc.id, {
-            id: fc.id,
-            name: fc.name,
-            response: { output: `Error running ${fc.name}: ${err?.message || 'unknown error'}` },
-          });
-          coordinatorRef.current?.forceFlush().then(() => removeToolCall(fc.id));
+          // Step 2 — send the response; removeToolCall in finally so it
+          // runs regardless of whether the send succeeds or fails.
+          try {
+            console.log(`[ToolRouter] Fast result ready for ${fc.name} (${output.length} chars)`);
+            coordinatorRef.current?.addResponse(fc.id, {
+              id: fc.id,
+              name: fc.name,
+              response: { output: output.substring(0, 3000) },
+            });
+            // Null-safe await: if coordinator was torn down mid-flight, resolve immediately.
+            await (coordinatorRef.current?.forceFlush() ?? Promise.resolve());
+          } catch (sendErr: any) {
+            console.error(`[ToolRouter] Failed to send response for ${fc.name}:`, sendErr);
+          } finally {
+            removeToolCall(fc.id);
+          }
+        })().catch((err: any) => {
+          // Last-resort: catches anything thrown outside the try blocks above.
+          console.error(`[ToolRouter] Unexpected error in fast tool ${fc.name}:`, err);
+          removeToolCall(fc.id);
         });
       });
 
       // ── Slow/background calls ─────────────────────────────────────────────
       // ACK immediately (user doesn't wait), result arrives via SSE.
       if (slowCalls.length > 0) {
-        slowCalls.forEach((fc: any) => {
-          coordinatorRef.current?.addResponse(fc.id, {
-            id: fc.id,
-            name: fc.name,
-            response: { output: getAck(fc.name) },
+        try {
+          slowCalls.forEach((fc: any) => {
+            coordinatorRef.current?.addResponse(fc.id, {
+              id: fc.id,
+              name: fc.name,
+              response: { output: getAck(fc.name) },
+            });
           });
-        });
-
-        await coordinatorRef.current?.forceFlush();
-        slowCalls.forEach((fc: any) => removeToolCall(fc.id));
+          await (coordinatorRef.current?.forceFlush() ?? Promise.resolve());
+        } catch (ackErr: any) {
+          console.error('[ToolRouter] Failed to send ACK for slow tools:', ackErr);
+        } finally {
+          // Always release slow tool IDs so the state machine doesn't get stuck.
+          slowCalls.forEach((fc: any) => removeToolCall(fc.id));
+        }
 
         for (const fc of slowCalls) {
           if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); continue; }
