@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 logger = logging.getLogger("gemini_live.integrations.basecamp")
@@ -169,6 +170,33 @@ def _get_questionnaire_id(project_id: str) -> str | None:
     return None
 
 
+def _fetch_questions_for_project(project: dict) -> tuple[dict, list]:
+    """Fetch questions for one project (runs in thread pool)."""
+    questionnaire_id = None
+    for item in project.get("dock", []):
+        if item.get("name") == "questionnaire":
+            url = item.get("url", "")
+            parts = url.rstrip(".json").rsplit("/", 1)
+            if len(parts) == 2:
+                questionnaire_id = parts[1]
+            break
+    if not questionnaire_id:
+        return project, []
+    try:
+        questions = _api(f"questionnaires/{questionnaire_id}/questions.json") or []
+        return project, questions
+    except Exception:
+        return project, []
+
+
+def _fetch_answers_for_question(qid: str) -> list:
+    """Fetch today's answers for one question (runs in thread pool)."""
+    try:
+        return _api(f"questions/{qid}/answers.json") or []
+    except Exception:
+        return []
+
+
 def _get_checkins_sync(project_id: str) -> str:
     import datetime
 
@@ -176,10 +204,8 @@ def _get_checkins_sync(project_id: str) -> str:
 
     try:
         if project_id and project_id.strip().lstrip("-").isdigit():
-            # Numeric ID — fetch directly
             projects = [_api(f"projects/{project_id.strip()}.json")]
         elif project_id and project_id.strip():
-            # Project name — search by name (case-insensitive partial match)
             name_query = project_id.strip().lower()
             all_projects = _api("projects.json") or []
             matched = [p for p in all_projects if name_query in p.get("name", "").lower()]
@@ -194,51 +220,51 @@ def _get_checkins_sync(project_id: str) -> str:
     except Exception as exc:
         return f"Failed to fetch projects: {exc}"
 
-    lines: list[str] = []
+    # Step 1: Fetch questions for all projects in parallel
+    project_questions: list[tuple[dict, list]] = []
+    with ThreadPoolExecutor(max_workers=min(len(projects), 5)) as pool:
+        futures = {pool.submit(_fetch_questions_for_project, p): p for p in projects}
+        for future in as_completed(futures):
+            try:
+                project_questions.append(future.result())
+            except Exception:
+                pass
 
-    for project in projects:
+    # Step 2: Collect all active (non-paused) questions across all projects
+    active: list[tuple[dict, dict]] = [
+        (project, q)
+        for project, questions in project_questions
+        for q in questions
+        if not q.get("paused")
+    ]
+    if not active:
+        return "No check-in questions found."
+
+    # Step 3: Fetch answers for all questions in parallel
+    qid_to_answers: dict[str, list] = {}
+    with ThreadPoolExecutor(max_workers=min(len(active), 10)) as pool:
+        futures_a = {pool.submit(_fetch_answers_for_question, str(q.get("id", ""))): str(q.get("id", "")) for _, q in active}
+        for future in as_completed(futures_a):
+            qid = futures_a[future]
+            try:
+                qid_to_answers[qid] = future.result()
+            except Exception:
+                qid_to_answers[qid] = []
+
+    # Build output (preserving project → question order)
+    lines: list[str] = []
+    for project, q in active:
         pid = str(project.get("id", ""))
         pname = project.get("name", "(unnamed)")
+        qid = str(q.get("id", ""))
+        answers = qid_to_answers.get(qid, [])
+        answered_today = any(a.get("group_on", "") == today for a in answers)
+        status = "✓ answered" if answered_today else "⏳ pending"
+        lines.append(
+            f"• [{pname}] {q.get('title', '(no title)')}\n"
+            f"  question_id: {qid} | project_id: {pid} | {status}"
+        )
 
-        # Find questionnaire dock item
-        questionnaire_id = None
-        for item in project.get("dock", []):
-            if item.get("name") == "questionnaire":
-                url = item.get("url", "")
-                parts = url.rstrip(".json").rsplit("/", 1)
-                if len(parts) == 2:
-                    questionnaire_id = parts[1]
-                break
-
-        if not questionnaire_id:
-            continue
-
-        try:
-            questions = _api(f"questionnaires/{questionnaire_id}/questions.json") or []
-        except Exception:
-            continue
-
-        for q in questions:
-            if q.get("paused"):
-                continue
-            qid = str(q.get("id", ""))
-            title = q.get("title", "(no title)")
-
-            # Check if already answered today
-            try:
-                answers = _api(f"questions/{qid}/answers.json") or []
-                answered_today = any(a.get("group_on", "") == today for a in answers)
-            except Exception:
-                answered_today = False
-
-            status = "✓ answered" if answered_today else "⏳ pending"
-            lines.append(
-                f"• [{pname}] {title}\n"
-                f"  question_id: {qid} | project_id: {pid} | {status}"
-            )
-
-    if not lines:
-        return "No check-in questions found."
     return "Basecamp Check-ins:\n" + "\n".join(lines)
 
 

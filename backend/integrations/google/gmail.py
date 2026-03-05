@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,33 @@ async def search_emails(query: str, max_results: int = 10) -> str:
     return await asyncio.to_thread(_search_emails_sync, query, max_results)
 
 
+def _build_thread_service():
+    """Build a Gmail service with its own httplib2.Http — call once per thread."""
+    from googleapiclient.discovery import build
+    from google_auth_httplib2 import AuthorizedHttp
+    creds = _auth.get_credentials()
+    authed_http = AuthorizedHttp(creds, http=_auth._make_http())
+    return build("gmail", "v1", http=authed_http, static_discovery=True)
+
+
+def _fetch_message_metadata(msg_id: str) -> dict:
+    """Fetch metadata for a single message (runs in thread pool, own Http per thread)."""
+    service = _build_thread_service()
+    detail = service.users().messages().get(
+        userId="me", id=msg_id, format="metadata",
+        metadataHeaders=["Subject", "From", "Date"],
+    ).execute()
+    headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+    return {
+        "id": msg_id,
+        "from": headers.get("From", "Unknown"),
+        "subject": headers.get("Subject", "(no subject)"),
+        "date": headers.get("Date", ""),
+        "snippet": detail.get("snippet", "")[:150],
+    }
+
+
 def _search_emails_sync(query: str, max_results: int) -> str:
-    # Ensure max_results is an integer
     max_results = int(max_results) if not isinstance(max_results, int) else max_results
     try:
         service = _get_service()
@@ -37,18 +63,26 @@ def _search_emails_sync(query: str, max_results: int) -> str:
         if not messages:
             return f"No emails found matching: {query}"
 
-        summaries: list[str] = []
-        for msg in messages[:max_results]:
-            detail = service.users().messages().get(userId="me", id=msg["id"], format="metadata",
-                                                    metadataHeaders=["Subject", "From", "Date"]).execute()
-            headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
-            snippet = detail.get("snippet", "")[:150]
-            summaries.append(
-                f"From: {headers.get('From', 'Unknown')}\n"
-                f"Subject: {headers.get('Subject', '(no subject)')}\n"
-                f"Date: {headers.get('Date', '')}\n"
-                f"Preview: {snippet}"
-            )
+        # Fetch all details in parallel — each thread builds its own Http to avoid
+        # httplib2 thread-safety issues (shared Http causes SSL WRONG_VERSION_NUMBER)
+        with ThreadPoolExecutor(max_workers=min(len(messages), 5)) as pool:
+            futures = {pool.submit(_fetch_message_metadata, m["id"]): m["id"] for m in messages}
+            details = {}
+            for future in as_completed(futures):
+                try:
+                    d = future.result()
+                    details[d["id"]] = d
+                except Exception as e:
+                    mid = futures[future]
+                    details[mid] = {"id": mid, "from": "Unknown", "subject": "(error)", "date": "", "snippet": str(e)}
+
+        summaries = [
+            f"From: {details[m['id']]['from']}\n"
+            f"Subject: {details[m['id']]['subject']}\n"
+            f"Date: {details[m['id']]['date']}\n"
+            f"Preview: {details[m['id']]['snippet']}"
+            for m in messages if m["id"] in details
+        ]
         return f"Found {len(messages)} email(s):\n\n" + "\n\n---\n\n".join(summaries)
     except Exception as exc:
         logger.exception("search_emails failed")
@@ -67,7 +101,6 @@ async def get_recent_emails(count: int = 5) -> str:
 
 
 def _get_recent_emails_sync(count: int) -> str:
-    # Ensure count is an integer
     count = int(count) if not isinstance(count, int) else count
     try:
         service = _get_service()
@@ -76,18 +109,26 @@ def _get_recent_emails_sync(count: int) -> str:
         if not messages:
             return "No recent emails found."
 
-        summaries: list[str] = []
-        for msg in messages:
-            detail = service.users().messages().get(userId="me", id=msg["id"], format="metadata",
-                                                    metadataHeaders=["Subject", "From", "Date"]).execute()
-            headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
-            snippet = detail.get("snippet", "")[:150]
-            summaries.append(
-                f"From: {headers.get('From', 'Unknown')}\n"
-                f"Subject: {headers.get('Subject', '(no subject)')}\n"
-                f"Date: {headers.get('Date', '')}\n"
-                f"Preview: {snippet}"
-            )
+        # Fetch all details in parallel — each thread builds its own Http to avoid
+        # httplib2 thread-safety issues (shared Http causes SSL WRONG_VERSION_NUMBER)
+        with ThreadPoolExecutor(max_workers=min(len(messages), 5)) as pool:
+            futures = {pool.submit(_fetch_message_metadata, m["id"]): m["id"] for m in messages}
+            details = {}
+            for future in as_completed(futures):
+                try:
+                    d = future.result()
+                    details[d["id"]] = d
+                except Exception as e:
+                    mid = futures[future]
+                    details[mid] = {"id": mid, "from": "Unknown", "subject": "(error)", "date": "", "snippet": str(e)}
+
+        summaries = [
+            f"From: {details[m['id']]['from']}\n"
+            f"Subject: {details[m['id']]['subject']}\n"
+            f"Date: {details[m['id']]['date']}\n"
+            f"Preview: {details[m['id']]['snippet']}"
+            for m in messages if m["id"] in details
+        ]
         return f"Your {len(summaries)} most recent email(s):\n\n" + "\n\n---\n\n".join(summaries)
     except Exception as exc:
         logger.exception("get_recent_emails failed")

@@ -437,15 +437,17 @@ async def execute_tool(
     Simple tools (get_time, web_search, etc.) execute directly and return results.
     Frontend can then send result back to Gemini Live via sendToolResponse().
     """
+    import time as _time
+    t0 = _time.monotonic()
     try:
         user_identity = current_user["email"]
-        await _upsert_user(user_identity, current_user.get("name", ""), current_user.get("picture", ""))
         orchestration = await get_orchestration()
         result = await orchestration.execute_tool(
             user_identity=user_identity,
             tool_name=request.tool_name,
             tool_args=request.tool_args
         )
+        logger.info("[TIMING] tool-execute %s end-to-end=%.0fms", request.tool_name, (_time.monotonic() - t0) * 1000)
         return ToolExecuteResponse(**result)
     except Exception as e:
         logger.error(f"Error in tool-execute endpoint: {e}", exc_info=True)
@@ -688,9 +690,11 @@ async def get_bg_task(task_id: str) -> BgTaskStatus:
 
 @router.get("/health")
 async def health_check(current_user: CurrentUser):
-    """Health check endpoint."""
+    """Health check endpoint. Also upserts the user record (called once per session)."""
     orchestration = await get_orchestration()
     user_email = current_user["email"]
+    # Upsert user here (once per session) instead of on every tool call
+    await _upsert_user(user_email, current_user.get("name", ""), current_user.get("picture", ""))
     user_tools = orchestration.get_user_tool_registry(user_email)
     return {
         "status": "healthy",

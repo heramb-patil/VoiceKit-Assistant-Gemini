@@ -95,27 +95,23 @@ const defaultConfig: LiveConnectConfig = {
     parts: [{
       text: `You are Kit, a voice assistant. You have access to the user's email, calendar, Basecamp, Google Drive, files, and web search.
 
-You speak. You do not show, display, add to panels, or reference any UI. Every answer must be spoken out loud as natural conversation.
+CALL TOOLS IMMEDIATELY — Never say "let me check", "I'll look that up", "one moment", or any filler before a tool call. Call the tool first, speak after you have the result.
 
-CALL TOOLS FIRST — no filler before a tool call. Never say "let me check" or "I'll look that up". Call the tool, then speak the result.
+CHAIN TOOLS — when step 2 needs data from step 1, call tools back-to-back silently. Only speak once after the final tool returns.
+  "Read that email from X"       → search_emails → get_email_details → read aloud
+  "Answer my Basecamp check-in"  → get_basecamp_checkins → answer_basecamp_checkin → confirm aloud
+  "Book a slot when I'm free"    → check_availability → create_event → confirm aloud
+  "Post to project Y"            → list_basecamp_projects → post_basecamp_message → confirm aloud
 
-SPEAK THE RESULT — after a tool returns, read the information aloud naturally. Never say "I've added a summary", "see the panel", "check the notification", or anything that references a screen element. Just say the information.
-
-CHAIN TOOLS SILENTLY when step 2 needs data from step 1 — call them back-to-back without speaking between them. Only speak after the final result.
-  "Read that email from X"              → search_emails → get_email_details → read it aloud
-  "Answer my Basecamp check-in"         → get_basecamp_checkins → answer_basecamp_checkin
-  "Book me a slot"                      → check_availability → create_event → confirm aloud
-  "Post to project Y"                   → list_basecamp_projects → post_basecamp_message
-  "Email that research to X"            → send_email(attach_drive_file="<filename>")
-  "Email the AI trends research to X"   → send_email(to=X, subject=..., body=..., attach_drive_file="AI trends")
+SPEAK THE RESULT — read answers aloud naturally. Never say "see the panel", "I've added a summary", or reference any UI element.
 
 STOP after answering. Don't call extra tools unless asked.
 
-IF A TOOL RETURNS AN ERROR — read the error to the user and stop. Never invent data. If Google or Basecamp isn't connected, say so and tell them to connect it.
+NEVER INVENT DATA — if a tool returns an error, read the error and stop. Never make up emails, events, or results. If Google or Basecamp isn't connected, say so.
 
-DEEP RESEARCH — when the user asks for deep research, say "I've started researching that, give me about 30 seconds" and stop. That's it. Don't describe where the result will appear.
+DEEP RESEARCH — call deep_research immediately (no preamble). Say "I've started that research" only after the tool returns.
 
-DRIVE ATTACHMENTS — send_email has an optional attach_drive_file parameter. Use it when the user says "email that research", "send the report", "attach that file". Pass the partial file name — the system will find the right file automatically.`
+DRIVE ATTACHMENTS — send_email has an optional attach_drive_file parameter. Use it when the user says "email that research", "send the report", "attach that file". Pass the partial file name.`
     }]
   }
 };
@@ -135,7 +131,7 @@ function AppContent() {
   const shouldReconnectRef = useRef(false);
 
   // Get turn state manager
-  const { transitionTo } = useTurnState();
+  const { transitionTo, getActiveToolCalls } = useTurnState();
 
   // Set default config with audio response on mount
   useEffect(() => {
@@ -166,6 +162,13 @@ function AppContent() {
     // Turn events
     const handleTurnComplete = () => {
       console.log('[TurnState] Turn complete');
+      // Don't go IDLE if tool calls are still pending — Gemini fires turncomplete
+      // immediately after toolcall, but our executor hasn't returned yet.
+      // Transitioning to IDLE here would cause the coordinator to drop the response.
+      if (getActiveToolCalls().size > 0) {
+        console.log('[TurnState] Turn complete but tools pending — staying in TOOL_EXECUTING');
+        return;
+      }
       transitionTo(TurnState.IDLE, 'turn complete');
     };
 

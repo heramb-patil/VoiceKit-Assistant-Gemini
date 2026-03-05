@@ -104,7 +104,9 @@ class StandaloneOrchestration:
         self._user_tools[user_email] = {}
         await self._load_google_tools_for_user(user_email)
         await self._load_basecamp_tools_for_user(user_email)
-        await self._load_user_mcp_tools(user_email)
+        # MCP servers can be slow to start (npm installs, network checks); run in
+        # the background so the first tool call is never blocked by MCP init.
+        asyncio.create_task(self._load_user_mcp_tools(user_email))
 
     async def _load_google_tools_for_user(self, user_email: str) -> None:
         """Load Google tools for *user_email* from DB credentials."""
@@ -261,7 +263,7 @@ class StandaloneOrchestration:
                 )
                 for srv in db_servers
             ]
-            await mgr.connect_all(configs, connect_timeout=15.0)
+            await mgr.connect_all(configs, connect_timeout=5.0)
 
             tools = await mgr.list_all_tools()
             for tool in tools:
@@ -365,9 +367,14 @@ class StandaloneOrchestration:
         Looks up tools in: user's integration tools → shared base tools.
         Lazily loads user integration tools on first call.
         """
+        import time as _time
+        t0 = _time.monotonic()
+
         try:
-            # Lazy-load user-specific integration tools
+            # Lazy-load user-specific integration tools (fast no-op after first call)
+            t_load_start = _time.monotonic()
             await self.ensure_user_tools_loaded(user_identity)
+            t_load_ms = (_time.monotonic() - t_load_start) * 1000
 
             registry = self.get_user_tool_registry(user_identity)
             if tool_name not in registry:
@@ -409,12 +416,21 @@ class StandaloneOrchestration:
                 }
 
             try:
+                t_exec_start = _time.monotonic()
                 result = await asyncio.wait_for(
                     tool_fn(**tool_args),
                     timeout=config.tool_execution_timeout,
                 )
+                t_exec_ms = (_time.monotonic() - t_exec_start) * 1000
+                t_total_ms = (_time.monotonic() - t0) * 1000
+                logger.info(
+                    "[TIMING] %s — load=%.0fms exec=%.0fms total=%.0fms",
+                    tool_name, t_load_ms, t_exec_ms, t_total_ms,
+                )
+                logger.info("[RESULT] %s — %s", tool_name, str(result)[:200])
                 return {"success": True, "result": str(result), "error": None}
             except asyncio.TimeoutError:
+                logger.warning("[TIMING] %s — TIMED OUT after %.0fms", tool_name, (_time.monotonic() - t0) * 1000)
                 return {
                     "success": False,
                     "result": "",
@@ -422,7 +438,10 @@ class StandaloneOrchestration:
                 }
 
         except Exception as e:
-            logger.error("Error executing tool %s for %s: %s", tool_name, user_identity, e, exc_info=True)
+            logger.error(
+                "[TIMING] %s — ERROR after %.0fms: %s",
+                tool_name, (_time.monotonic() - t0) * 1000, e, exc_info=True,
+            )
             return {"success": False, "result": "", "error": str(e)}
 
     async def _execute_background_task(

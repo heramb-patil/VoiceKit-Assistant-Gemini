@@ -17,6 +17,7 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/drive.file",
 ]
 
 
@@ -47,6 +48,10 @@ class GoogleAuth:
         self._user_email: Optional[str] = _user_email
         self._db_session_factory = _db_session_factory
         self._use_db = _token_json is not None
+        # Cached service clients: {f"{name}:{version}": service_obj}
+        # build() fetches a discovery document and allocates an HTTP pool —
+        # caching it saves ~100-300ms per tool call on repeated invocations.
+        self._service_cache: dict[str, Any] = {}
 
     # ── Factory for DB-backed auth ────────────────────────────────────────────
 
@@ -131,10 +136,12 @@ class GoogleAuth:
                     logger.warning("Token refresh failed: %s", exc)
                     self._creds = None
                     self._auth_failed = True
+                    self._service_cache.clear()
                     raise RuntimeError(_AUTH_ERROR_MSG) from exc
             else:
                 self._creds = None
                 self._auth_failed = True
+                self._service_cache.clear()
                 raise RuntimeError(_AUTH_ERROR_MSG)
 
         if self._creds and self._creds.valid:
@@ -219,11 +226,39 @@ class GoogleAuth:
 
     # ── Service helpers ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _make_http():
+        """httplib2.Http with certifi CA bundle (fixes macOS SSL errors)."""
+        import httplib2
+        try:
+            import certifi
+            return httplib2.Http(ca_certs=certifi.where())
+        except ImportError:
+            return httplib2.Http()
+
     def build_service(self, service_name: str, version: str) -> Any:
-        """Build a Google API service client."""
-        from googleapiclient.discovery import build
-        creds = self.get_credentials()
-        return build(service_name, version, credentials=creds)
+        """Return a cached Google API service client, building it on first use.
+
+        Uses certifi CA bundle to avoid macOS SSL errors with httplib2.
+        The Credentials object is shared by reference, so token auto-refresh
+        continues to work with the cached service instance.
+        """
+        cache_key = f"{service_name}:{version}"
+        if cache_key not in self._service_cache:
+            from googleapiclient.discovery import build
+            from google_auth_httplib2 import AuthorizedHttp
+            creds = self.get_credentials()
+            authed_http = AuthorizedHttp(creds, http=self._make_http())
+            self._service_cache[cache_key] = build(
+                service_name, version, http=authed_http,
+                static_discovery=True,  # use bundled discovery doc — no network fetch
+            )
+            logger.debug("Built and cached Google service %s", cache_key)
+        return self._service_cache[cache_key]
+
+    def invalidate_service_cache(self) -> None:
+        """Clear cached service clients (call after token revocation/refresh failure)."""
+        self._service_cache.clear()
 
     def is_authenticated(self) -> bool:
         """Return True if credentials are currently valid."""
