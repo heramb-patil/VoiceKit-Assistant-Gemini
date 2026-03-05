@@ -1,7 +1,6 @@
 # VoiceKit — Enterprise Stack Recommendation Package
-### Prepared for: USAI
 ### Prepared by: VoiceKit (Heramb Patil)
-### Date: March 2026 | Version 1.0 | Confidential
+### Date: March 2026 | Version 1.0
 
 ---
 
@@ -20,7 +19,7 @@
 
 ## 1. Executive Summary
 
-VoiceKit has two production-grade voice AI stacks available for deployment. This document recommends the right one for USAI, explains the reasoning, and covers all compliance, privacy, and commercial details needed to make a deployment decision.
+VoiceKit has two production-grade voice AI stacks available for deployment. This document covers both options, explains the reasoning behind the primary recommendation, and provides all compliance, privacy, and commercial details needed to make a deployment decision.
 
 **Bottom line up front:**
 
@@ -35,9 +34,9 @@ VoiceKit has two production-grade voice AI stacks available for deployment. This
 | **Vendor lock-in** | None — swap any component in YAML | High — tightly coupled to Google |
 | **Latency (end-to-end)** | 300–600 ms (tunable) | 250–500 ms |
 | **Cost / minute (est.)** | $0.047–0.065 at list (TTS-dominated) | ~$0.001 at list |
-| **Recommended for USAI** | ✅ Yes | Fallback only |
+| **Recommended for enterprise** | ✅ Yes | Fallback only |
 
-**Recommendation:** Deploy the **VoiceKit Custom Stack** as the primary platform. It gives USAI full data control, per-component compliance contracts, US-region data residency, and no dependency on Google's model training policies. The Gemini Live stack is retained as a hot backup for conversational naturalness benchmarks and low-traffic secondary use cases.
+**Recommendation:** Deploy the **VoiceKit Custom Stack** as the primary platform. It provides full data control, per-component compliance contracts, US-region data residency, and no dependency on Google's model training policies. The Gemini Live stack is retained as a hot backup for conversational naturalness benchmarks and low-traffic secondary use cases.
 
 ---
 
@@ -143,10 +142,10 @@ Browser audio output
 
 ## 3. Primary Recommendation — VoiceKit Custom Stack
 
-### 3.1 Recommended Component Configuration for USAI
+### 3.1 Recommended Component Configuration
 
 ```yaml
-# config/agent.yaml — USAI production configuration
+# config/agent.yaml — production configuration
 
 providers:
   vad:
@@ -175,7 +174,7 @@ providers:
     provider: "cartesia"
     params:
       model: "sonic-2"
-      voice: "[USAI_VOICE_ID]"       # Custom voice per brand
+      voice: "[YOUR_VOICE_ID]"       # Custom voice per brand
     fallbacks:
       - provider: "openai"
         params:
@@ -194,7 +193,7 @@ rate_limit:
   requests_per_minute: 120
 
 cors:
-  allow_origins: ["https://usai.yourdomain.com"]
+  allow_origins: ["https://yourapp.yourdomain.com"]
 
 logging:
   level: "INFO"
@@ -229,7 +228,7 @@ logging:
 
 ## 4. Enterprise Privacy Policy
 
-*This policy reflects the actual data flows of the VoiceKit Custom Stack as configured for USAI.*
+*This policy reflects the actual data flows of the VoiceKit Custom Stack.*
 
 ---
 
@@ -246,7 +245,7 @@ logging:
 
 ### 4.2 Third-Party Sub-Processors
 
-The following vendors process data on behalf of USAI when the Custom Stack is in use.
+The following vendors process data on behalf of the deploying organization when the Custom Stack is in use.
 
 | Sub-processor | Data Sent | Compliance Contracts | ZDR Available |
 |--------------|-----------|---------------------|--------------|
@@ -275,7 +274,7 @@ Each sub-processor has its own privacy policy that governs their handling of the
 - **Cartesia:** [cartesia.ai](https://cartesia.ai) — SOC 2, HIPAA BAA, ZDR for enterprise
 - **OpenAI (fallback):** [openai.com/security-and-privacy](https://openai.com/security-and-privacy) — SOC 2 Type II, 30-day default retention, ZDR via enterprise contract
 
-USAI should execute BAAs and ZDR agreements with all sub-processors before processing HIPAA-regulated data.
+The deploying organization should execute BAAs and ZDR agreements with all sub-processors before processing HIPAA-regulated data.
 
 ### 4.5 Compliance Coverage
 
@@ -289,7 +288,7 @@ USAI should execute BAAs and ZDR agreements with all sub-processors before proce
 
 ### 4.6 User Rights
 
-USAI's end users have the following rights with respect to data stored in VoiceKit:
+End users have the following rights with respect to data stored in VoiceKit:
 
 - **Access:** Session transcripts and tool call logs are queryable via the dashboard API or direct PostgreSQL access.
 - **Deletion:** `DELETE /sessions/{id}` removes all records including messages, tool calls, and audit logs for a session. Bulk deletion available.
@@ -302,7 +301,7 @@ USAI's end users have the following rights with respect to data stored in VoiceK
 
 ### 5.1 Default Retention Schedule
 
-VoiceKit's built-in `retention_days` setting auto-purges expired sessions on each API startup. The following schedule is recommended for USAI as a starting point, adjustable based on legal and operational requirements.
+VoiceKit's built-in `retention_days` setting auto-purges expired sessions on each API startup. The following schedule is a recommended starting point, adjustable based on legal and operational requirements.
 
 | Data Type | Default Retention | Purge Mechanism | Rationale |
 |-----------|-----------------|-----------------|-----------|
@@ -415,7 +414,7 @@ Gemini 2.0 Flash Live (Google AI Studio pricing, March 2026):
 
 **Estimated total:** ~**$0.001/minute** at list prices.
 
-> **Important context:** Gemini 2.0 Flash Live is significantly cheaper than the Custom Stack at list prices due to Google's unified audio token pricing. The primary reasons to choose the Custom Stack over Gemini Live for USAI are **compliance and data sovereignty** (Section 4), not cost. Gemini Live under AI Studio terms may use conversation data for model improvement; Vertex AI migration is required for HIPAA or GDPR-regulated workloads.
+> **Important context:** Gemini 2.0 Flash Live is significantly cheaper than the Custom Stack at list prices due to Google's unified audio token pricing. The primary reasons to choose the Custom Stack over Gemini Live are **compliance and data sovereignty** (Section 4), not cost. Gemini Live under AI Studio terms may use conversation data for model improvement; Vertex AI migration is required for HIPAA or GDPR-regulated workloads.
 >
 > Note: Gemini pricing changes frequently. Verify at [ai.google.dev/pricing](https://ai.google.dev/pricing).
 
@@ -458,9 +457,9 @@ The Gemini Live stack is recommended as a backup or secondary deployment in the 
 | Research / R&D environment | No PHI, no HIPAA required — Gemini Live is acceptable |
 | Fallback if Custom Stack is degraded | Route traffic to Gemini Live while Custom Stack recovers |
 
-### 7.2 Critical Requirement Before Production Use
+### 7.2 Critical Requirements Before Production Use
 
-**The Gemini Live stack must NOT be deployed to production for USAI without addressing the following:**
+**The Gemini Live stack must NOT be deployed to production without addressing the following:**
 
 1. **Migrate from Google AI Studio API key to Vertex AI**
    - Current configuration uses `REACT_APP_GEMINI_API_KEY` (AI Studio key)
@@ -507,23 +506,23 @@ BACKUP:   Gemini Live Stack (post Vertex AI migration)
 
 | Action | Owner | Priority |
 |--------|-------|----------|
-| Sign Deepgram Enterprise BAA + ZDR addendum | USAI / VoiceKit | CRITICAL |
-| Sign Groq Enterprise ZDR agreement | USAI / VoiceKit | CRITICAL |
-| Sign Cartesia Enterprise BAA + ZDR | USAI / VoiceKit | CRITICAL |
-| Sign OpenAI Enterprise ZDR (for fallback) | USAI / VoiceKit | HIGH |
+| Sign Deepgram Enterprise BAA + ZDR addendum | Client / VoiceKit | CRITICAL |
+| Sign Groq Enterprise ZDR agreement | Client / VoiceKit | CRITICAL |
+| Sign Cartesia Enterprise BAA + ZDR | Client / VoiceKit | CRITICAL |
+| Sign OpenAI Enterprise ZDR (for fallback) | Client / VoiceKit | HIGH |
 | Enable RDS encryption at rest | VoiceKit infra | CRITICAL |
 | Configure AWS Secrets Manager | VoiceKit infra | HIGH |
 | Set `cors.allow_origins` to production domains | VoiceKit infra | HIGH |
 | Define and implement retention schedule | Both | HIGH |
 | Conduct security review of tool functions | Both | HIGH |
 | (If Gemini Live used) Migrate to Vertex AI | VoiceKit | CRITICAL before prod |
-| (If Gemini Live used) Execute Google Cloud DPA | USAI | CRITICAL before prod |
+| (If Gemini Live used) Execute Google Cloud DPA | Client | CRITICAL before prod |
 
 ### 8.3 Suggested Phased Rollout
 
 **Phase 1 — Pilot (Weeks 1–4)**
 - Deploy Custom Stack to AWS staging environment
-- Configure with USAI-specific system prompt and tools
+- Configure with client-specific system prompt and tools
 - Internal testing with 5–10 users
 - Validate latency, accuracy, and voice quality
 
@@ -546,4 +545,4 @@ BACKUP:   Gemini Live Stack (post Vertex AI migration)
 
 ---
 
-*This document is confidential and prepared exclusively for USAI. Pricing figures are estimates based on publicly available list prices as of March 2026 and are subject to change. Compliance assessments are informational and do not constitute legal advice. USAI should engage qualified legal counsel before deploying in regulated industries.*
+*Pricing figures are estimates based on publicly available list prices as of March 2026 and are subject to change. Compliance assessments are informational and do not constitute legal advice. Engage qualified legal counsel before deploying in regulated industries.*
