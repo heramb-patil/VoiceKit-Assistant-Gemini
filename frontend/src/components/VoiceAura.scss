@@ -1,180 +1,19 @@
 // ── VoiceAura ──────────────────────────────────────────────────────────────
-// Animated aura that reflects the current voice conversation state.
+// WebGL shader-based visualizer — all rendering done on GPU.
 
 .voice-aura {
-  position: relative;
-  width: 160px;
-  height: 160px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 400px;
+  height: 400px;
   flex-shrink: 0;
-}
 
-// ── Core circle ────────────────────────────────────────────────────────────
+  // Fade edges to transparent so bloom light doesn't hard-clip at canvas boundary.
+  // Ring sits at ~28% of the container radius; bloom dissipates naturally before 70%.
+  mask-image: radial-gradient(circle at center, black 40%, transparent 70%);
+  -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 70%);
 
-.voice-aura__core {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: rgba(79, 195, 247, 0.08);
-  border: 2px solid rgba(79, 195, 247, 0.2);
-  position: relative;
-  z-index: 2;
-  transition: background 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease;
-}
-
-// ── Rings ──────────────────────────────────────────────────────────────────
-
-.voice-aura__ring {
-  position: absolute;
-  border-radius: 50%;
-  border: 1.5px solid rgba(79, 195, 247, 0.35);
-  opacity: 0;
-  pointer-events: none;
-  transform: scale(0.5);
-
-  &--1 { width: 70px;  height: 70px;  }
-  &--2 { width: 96px;  height: 96px;  }
-  &--3 { width: 124px; height: 124px; }
-  &--4 { width: 152px; height: 152px; }
-}
-
-// ── IDLE — soft breathing pulse ────────────────────────────────────────────
-
-.voice-aura--idle {
-  .voice-aura__core {
-    background: rgba(79, 195, 247, 0.1);
-    border-color: rgba(79, 195, 247, 0.25);
-    animation: aura-core-breathe 4s ease-in-out infinite;
-  }
-
-  .voice-aura__ring--1 {
-    opacity: 1;
-    transform: scale(1);
-    animation: aura-ring-breathe 4s ease-in-out infinite;
-  }
-}
-
-@keyframes aura-core-breathe {
-  0%, 100% { box-shadow: 0 0 12px rgba(79, 195, 247, 0.15); transform: scale(1); }
-  50%       { box-shadow: 0 0 22px rgba(79, 195, 247, 0.30); transform: scale(1.07); }
-}
-
-@keyframes aura-ring-breathe {
-  0%, 100% { opacity: 0.15; transform: scale(1); }
-  50%       { opacity: 0.28; transform: scale(1.05); }
-}
-
-// ── MODEL SPEAKING — sonar rings radiating outward ─────────────────────────
-
-.voice-aura--speaking {
-  .voice-aura__core {
-    background: rgba(79, 195, 247, 0.25);
-    border-color: rgba(79, 195, 247, 0.8);
-    box-shadow: 0 0 24px rgba(79, 195, 247, 0.45), 0 0 48px rgba(79, 195, 247, 0.15);
-    animation: aura-core-speaking 0.9s ease-in-out infinite;
-  }
-
-  .voice-aura__ring--1 { animation: aura-sonar 2.4s ease-out infinite; animation-delay: 0s;    border-color: rgba(79, 195, 247, 0.7); }
-  .voice-aura__ring--2 { animation: aura-sonar 2.4s ease-out infinite; animation-delay: 0.6s;  border-color: rgba(79, 195, 247, 0.6); }
-  .voice-aura__ring--3 { animation: aura-sonar 2.4s ease-out infinite; animation-delay: 1.2s;  border-color: rgba(79, 195, 247, 0.5); }
-  .voice-aura__ring--4 { animation: aura-sonar 2.4s ease-out infinite; animation-delay: 1.8s;  border-color: rgba(79, 195, 247, 0.4); }
-}
-
-@keyframes aura-core-speaking {
-  0%, 100% { transform: scale(1); }
-  50%       { transform: scale(1.12); }
-}
-
-@keyframes aura-sonar {
-  0%   { transform: scale(0.4); opacity: 0.9; }
-  70%  { opacity: 0.3; }
-  100% { transform: scale(2.2); opacity: 0; }
-}
-
-// ── USER SPEAKING — reactive amber pulse ───────────────────────────────────
-
-.voice-aura--listening {
-  .voice-aura__core {
-    background: rgba(255, 183, 77, 0.25);
-    border-color: rgba(255, 183, 77, 0.8);
-    box-shadow: 0 0 20px rgba(255, 183, 77, 0.4);
-    animation: aura-core-listening 0.55s ease-in-out infinite;
-  }
-
-  .voice-aura__ring--1 { border-color: rgba(255, 183, 77, 0.7); animation: aura-sonar-amber 1.8s ease-out infinite; animation-delay: 0s;   }
-  .voice-aura__ring--2 { border-color: rgba(255, 183, 77, 0.6); animation: aura-sonar-amber 1.8s ease-out infinite; animation-delay: 0.45s; }
-  .voice-aura__ring--3 { border-color: rgba(255, 183, 77, 0.5); animation: aura-sonar-amber 1.8s ease-out infinite; animation-delay: 0.9s;  }
-}
-
-@keyframes aura-core-listening {
-  0%, 100% { transform: scale(1); }
-  50%       { transform: scale(1.18); }
-}
-
-@keyframes aura-sonar-amber {
-  0%   { transform: scale(0.4); opacity: 0.85; }
-  70%  { opacity: 0.25; }
-  100% { transform: scale(2.0); opacity: 0; }
-}
-
-// ── THINKING / TOOLS — spinning arcs (purple) ──────────────────────────────
-
-.voice-aura--thinking {
-  .voice-aura__core {
-    background: rgba(179, 136, 255, 0.15);
-    border-color: rgba(179, 136, 255, 0.4);
-    box-shadow: 0 0 14px rgba(179, 136, 255, 0.2);
-  }
-
-  .voice-aura__ring--1 {
-    opacity: 0.7;
-    transform: scale(1);
-    border-color: rgba(179, 136, 255, 0.6);
-    border-top-color: transparent;
-    border-right-color: transparent;
-    animation: aura-spin 1.1s linear infinite;
-  }
-
-  .voice-aura__ring--2 {
-    opacity: 0.35;
-    transform: scale(1);
-    border-color: rgba(179, 136, 255, 0.35);
-    border-bottom-color: transparent;
-    border-left-color: transparent;
-    animation: aura-spin-rev 1.7s linear infinite;
-  }
-
-  .voice-aura__ring--3 {
-    opacity: 0.18;
-    transform: scale(1);
-    border-color: rgba(179, 136, 255, 0.25);
-    animation: aura-ring-breathe 2s ease-in-out infinite;
-  }
-}
-
-@keyframes aura-spin {
-  from { transform: scale(1) rotate(0deg); }
-  to   { transform: scale(1) rotate(360deg); }
-}
-
-@keyframes aura-spin-rev {
-  from { transform: scale(1) rotate(0deg); }
-  to   { transform: scale(1) rotate(-360deg); }
-}
-
-// ── DISCONNECTED — static grey ─────────────────────────────────────────────
-
-.voice-aura--disconnected {
-  .voice-aura__core {
-    background: rgba(80, 80, 80, 0.1);
-    border-color: rgba(80, 80, 80, 0.2);
-  }
-
-  .voice-aura__ring--1 {
-    opacity: 0.1;
-    transform: scale(1);
-    border-color: rgba(80, 80, 80, 0.3);
+  canvas {
+    // Additive blending: dark/near-zero pixels are invisible (no background tint),
+    // bright ring pixels add their color to the dark page background.
+    mix-blend-mode: screen;
   }
 }
