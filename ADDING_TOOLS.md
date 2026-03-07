@@ -93,7 +93,7 @@ This is the most important step for preventing hallucination. Gemini uses the de
 - Give an example value in each parameter description
 - Keep the top-level description under 120 chars; put extra detail in parameter descriptions
 
-### 4. Register timing in `TOOL_METADATA` (`api.py`)
+### 4. Register timing + category in `TOOL_METADATA` (`api.py`)
 
 ```python
 # backend/api.py  →  TOOL_METADATA dict
@@ -101,26 +101,33 @@ This is the most important step for preventing hallucination. Gemini uses the de
 "get_contact": {"estimated_seconds": 3, "is_background": False},
 ```
 
-And mirror it in the frontend:
+And mirror it in the frontend with the **three-tier `category`** field:
 
 ```typescript
 // frontend/src/components/ToolRouter.tsx  →  TOOL_META
 
-get_contact: { estimatedSeconds: 3, isBackground: false },
+get_contact: { estimatedSeconds: 3, isBackground: false, category: 'awaited' },
 ```
 
-- `isBackground: false` → ToolRouter waits for the real result before sending a toolResponse. Gemini receives the actual answer and responds immediately. Use for read operations where the user is waiting.
-- `isBackground: true` → ToolRouter sends an ACK string immediately, submits to the SJF background queue, and re-injects the result via SSE when done. Gemini continues talking; the result arrives silently as context. Use for write operations (send email, create todo) or anything >8 seconds.
+**Pick the right category:**
 
-### 5. Add an ACK message (background tools only)
+| Category | When to use | Behaviour |
+|---|---|---|
+| `'inline'` | Trivially fast (<1s): math, time, file reads | Executes synchronously; real result sent as toolResponse; Gemini responds immediately |
+| `'awaited'` | User is waiting for data (reads, search, 1–15s) | ACK toolResponse instantly ("Checking your inbox."); runs in background; **result injected with `turnComplete=true`** so Gemini speaks it as soon as it arrives |
+| `'background'` | Fire-and-forget writes or long tasks (>15s) | ACK instantly; result injected as **silent context** (`turnComplete=false`); Gemini incorporates it next time user speaks |
+
+For `get_contact` (a 3s read the user is waiting for) → `'awaited'` is correct.
+
+### 5. Add an ACK message (awaited + background tools)
 
 ```typescript
 // frontend/src/components/ToolRouter.tsx  →  ACK_MESSAGES
 
-get_contact: 'Looking up that contact.',  // only needed if isBackground: true
+get_contact: 'Looking up that contact. Result coming shortly.',
 ```
 
-If you skip this, background tools fall back to `Running get_contact.` which is acceptable but rough.
+Gemini hears this phrase immediately while the tool runs. Add `"Result coming shortly."` to any awaited tool so Gemini knows not to retry. Falls back to `Running get_contact.` if omitted.
 
 ---
 
