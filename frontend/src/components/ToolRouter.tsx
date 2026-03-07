@@ -3,14 +3,21 @@
  *
  * Routes Gemini Live function calls to VoiceKit backend.
  *
- * Fast/slow classification:
- * - Fast tools (calendar, web_search, etc.) execute inline via bridge.executeTool
- * - Slow tools (email, deep_research, etc.) submit to SJF background queue and
- *   return a placeholder ACK immediately so the conversation continues.
+ * Three-tier classification:
+ *   INLINE     — sub-second tools (calculate, get_time); execute synchronously,
+ *                result sent as toolResponse so Gemini speaks it immediately.
+ *   AWAITED    — read operations (emails, search, calendar, 3-10s); ACK as
+ *                toolResponse immediately ("Checking your inbox."), execute in
+ *                background, inject result with turnComplete=true so Gemini
+ *                speaks it as soon as it arrives. User hears no silence.
+ *   BACKGROUND — write/long operations (sends, deep_research); ACK immediately,
+ *                execute in background, inject result as silent context
+ *                (turnComplete=false). User does not wait.
  *
  * Result delivery:
- * - Fast tool results are queued in pendingResults and injected when IDLE.
- * - Slow tool results arrive via SSE (GET /tasks/stream) and are similarly queued.
+ * - INLINE results come back in the toolResponse itself.
+ * - AWAITED results arrive via SSE → pendingResults (isContext=false) → spoken.
+ * - BACKGROUND results arrive via SSE → pendingResults (isContext=true) → silent.
  */
 
 import { useEffect, useRef } from 'react';
@@ -38,47 +45,69 @@ interface PendingResult {
 
 // ── Tool metadata (mirrors backend TOOL_METADATA) ────────────────────────────
 
+type ToolCategory = 'inline' | 'awaited' | 'background';
+
 interface ToolMeta {
   estimatedSeconds: number;
+  /** @deprecated use category instead */
   isBackground: boolean;
+  /**
+   * inline     — trivially fast (<1s); execute synchronously, result in toolResponse
+   * awaited    — user is waiting for the result (reads, search); ACK immediately,
+   *              deliver result with turnComplete=true so Gemini speaks it
+   * background — fire-and-forget (writes, long research); ACK + silent context
+   */
+  category: ToolCategory;
 }
 
 const TOOL_META: Record<string, ToolMeta> = {
-  // Calendar — inline, user is waiting
-  get_todays_events:      { estimatedSeconds: 2,  isBackground: false },
-  get_upcoming_events:    { estimatedSeconds: 3,  isBackground: false },
-  create_event:           { estimatedSeconds: 3,  isBackground: false },
-  check_availability:     { estimatedSeconds: 2,  isBackground: false },
-  // Search — inline
-  web_search:             { estimatedSeconds: 5,  isBackground: false },
-  // Email reads — inline: user is actively waiting for the answer, must be spoken
-  get_recent_emails:      { estimatedSeconds: 6,  isBackground: false },
-  search_emails:          { estimatedSeconds: 8,  isBackground: false },
-  get_email_details:      { estimatedSeconds: 4,  isBackground: false },
-  // Email writes — background: fire-and-forget, confirmation is enough
-  send_email:             { estimatedSeconds: 5,  isBackground: true  },
-  reply_email:            { estimatedSeconds: 5,  isBackground: true  },
-  // Chat
-  list_chat_spaces:       { estimatedSeconds: 3,  isBackground: false },
-  get_chat_messages:      { estimatedSeconds: 4,  isBackground: false },
-  send_chat_message:      { estimatedSeconds: 4,  isBackground: true  },
-  // Basecamp reads — inline
-  list_basecamp_projects: { estimatedSeconds: 4,  isBackground: false },
-  get_basecamp_todos:     { estimatedSeconds: 5,  isBackground: false },
-  get_basecamp_messages:  { estimatedSeconds: 5,  isBackground: false },
-  get_basecamp_checkins:  { estimatedSeconds: 8,  isBackground: false },
-  // Basecamp writes — background
-  create_basecamp_todo:   { estimatedSeconds: 5,  isBackground: true  },
-  post_basecamp_message:  { estimatedSeconds: 5,  isBackground: true  },
-  update_basecamp_todo:   { estimatedSeconds: 4,  isBackground: true  },
-  post_basecamp_comment:  { estimatedSeconds: 4,  isBackground: true  },
-  answer_basecamp_checkin:{ estimatedSeconds: 4,  isBackground: false },
-  // Deep research — always background
-  deep_research:          { estimatedSeconds: 60, isBackground: true  },
+  // ── Truly instant — inline ────────────────────────────────────────────────
+  get_current_time:        { estimatedSeconds: 0.1, isBackground: false, category: 'inline'     },
+  calculate:               { estimatedSeconds: 0.1, isBackground: false, category: 'inline'     },
+  read_file:               { estimatedSeconds: 0.5, isBackground: false, category: 'inline'     },
+  list_files:              { estimatedSeconds: 0.5, isBackground: false, category: 'inline'     },
+  create_file:             { estimatedSeconds: 0.5, isBackground: false, category: 'inline'     },
+  append_to_file:          { estimatedSeconds: 0.5, isBackground: false, category: 'inline'     },
+
+  // ── User waits for result — awaited (ACK + async spoken result) ───────────
+  // Calendar: 2-3s — short enough to ACK ("Looking at your calendar…")
+  get_todays_events:       { estimatedSeconds: 2,   isBackground: false, category: 'awaited'    },
+  get_upcoming_events:     { estimatedSeconds: 3,   isBackground: false, category: 'awaited'    },
+  create_event:            { estimatedSeconds: 3,   isBackground: false, category: 'awaited'    },
+  check_availability:      { estimatedSeconds: 2,   isBackground: false, category: 'awaited'    },
+  // Search — user always waits for spoken answer
+  web_search:              { estimatedSeconds: 5,   isBackground: false, category: 'awaited'    },
+  // Email reads — 6-8s of silence before; now ACK immediately
+  get_recent_emails:       { estimatedSeconds: 6,   isBackground: false, category: 'awaited'    },
+  search_emails:           { estimatedSeconds: 8,   isBackground: false, category: 'awaited'    },
+  get_email_details:       { estimatedSeconds: 4,   isBackground: false, category: 'awaited'    },
+  // Chat reads
+  list_chat_spaces:        { estimatedSeconds: 3,   isBackground: false, category: 'awaited'    },
+  get_chat_messages:       { estimatedSeconds: 4,   isBackground: false, category: 'awaited'    },
+  // Basecamp reads
+  list_basecamp_projects:  { estimatedSeconds: 4,   isBackground: false, category: 'awaited'    },
+  get_basecamp_todos:      { estimatedSeconds: 5,   isBackground: false, category: 'awaited'    },
+  get_basecamp_messages:   { estimatedSeconds: 5,   isBackground: false, category: 'awaited'    },
+  get_basecamp_checkins:   { estimatedSeconds: 8,   isBackground: false, category: 'awaited'    },
+  answer_basecamp_checkin: { estimatedSeconds: 4,   isBackground: false, category: 'awaited'    },
+  // Drive reads
+  list_drive_files:        { estimatedSeconds: 3,   isBackground: false, category: 'awaited'    },
+
+  // ── Fire-and-forget writes — background (ACK + silent context) ───────────
+  send_email:              { estimatedSeconds: 5,   isBackground: true,  category: 'background' },
+  reply_email:             { estimatedSeconds: 5,   isBackground: true,  category: 'background' },
+  send_chat_message:       { estimatedSeconds: 4,   isBackground: true,  category: 'background' },
+  create_basecamp_todo:    { estimatedSeconds: 5,   isBackground: true,  category: 'background' },
+  post_basecamp_message:   { estimatedSeconds: 5,   isBackground: true,  category: 'background' },
+  update_basecamp_todo:    { estimatedSeconds: 4,   isBackground: true,  category: 'background' },
+  post_basecamp_comment:   { estimatedSeconds: 4,   isBackground: true,  category: 'background' },
+  upload_to_drive:         { estimatedSeconds: 5,   isBackground: true,  category: 'background' },
+  // Long research — always background
+  deep_research:           { estimatedSeconds: 60,  isBackground: true,  category: 'background' },
 };
 
 function getToolMeta(name: string): ToolMeta {
-  return TOOL_META[name] ?? { estimatedSeconds: 10, isBackground: false };
+  return TOOL_META[name] ?? { estimatedSeconds: 10, isBackground: false, category: 'awaited' };
 }
 
 // ── Tools handled locally in the browser (everything else routes to backend) ──
@@ -92,31 +121,34 @@ const LOCAL_TOOLS = new Set([
 // ── Acknowledgment messages ───────────────────────────────────────────────────
 
 const ACK_MESSAGES: Record<string, string> = {
-  get_recent_emails:   'Checking your inbox.',
-  search_emails:       'Searching your emails.',
-  send_email:          'Sending that email now.',
-  get_email_details:   'Pulling up that email.',
-  get_todays_events:   'Looking at your calendar.',
-  get_upcoming_events: 'Checking your upcoming schedule.',
-  create_event:        'Creating that event.',
-  check_availability:  'Checking your availability.',
-  list_chat_spaces:    'Looking up your chat spaces.',
-  send_chat_message:   'Sending that message.',
-  web_search:          'Searching for that now.',
-  deep_research:       'Starting comprehensive research — takes about 60 seconds. Feel free to keep chatting!',
-  get_current_time:    'Checking the time.',
-  calculate:           'Calculating.',
-  read_file:           'Reading that file.',
-  list_files:          'Listing files.',
-  create_file:         'Creating that file.',
-  append_to_file:      'Appending to that file.',
-  list_basecamp_projects: 'Looking up your Basecamp projects.',
-  get_basecamp_todos:  'Fetching your Basecamp todos.',
-  create_basecamp_todo:'Creating that todo in Basecamp.',
-  get_basecamp_messages:'Fetching Basecamp messages.',
-  post_basecamp_message:'Posting that message to Basecamp.',
-  get_basecamp_checkins:'Checking your Basecamp check-ins.',
+  get_recent_emails:      'Checking your inbox. Result coming shortly.',
+  search_emails:          'Searching your emails. Result coming shortly.',
+  send_email:             'Sending that email now.',
+  get_email_details:      'Pulling up that email. Result coming shortly.',
+  get_todays_events:      'Looking at your calendar. Result coming shortly.',
+  get_upcoming_events:    'Checking your upcoming schedule. Result coming shortly.',
+  create_event:           'Creating that event. Result coming shortly.',
+  check_availability:     'Checking your availability. Result coming shortly.',
+  list_chat_spaces:       'Looking up your chat spaces. Result coming shortly.',
+  get_chat_messages:      'Fetching those messages. Result coming shortly.',
+  send_chat_message:      'Sending that message.',
+  web_search:             'Searching for that now. Result coming shortly.',
+  deep_research:          'Starting comprehensive research — takes about 60 seconds. Feel free to keep chatting!',
+  get_current_time:       'Checking the time.',
+  calculate:              'Calculating.',
+  read_file:              'Reading that file.',
+  list_files:             'Listing files.',
+  create_file:            'Creating that file.',
+  append_to_file:         'Appending to that file.',
+  list_basecamp_projects: 'Looking up your Basecamp projects. Result coming shortly.',
+  get_basecamp_todos:     'Fetching your Basecamp todos. Result coming shortly.',
+  create_basecamp_todo:   'Creating that todo in Basecamp.',
+  get_basecamp_messages:  'Fetching Basecamp messages. Result coming shortly.',
+  post_basecamp_message:  'Posting that message to Basecamp.',
+  get_basecamp_checkins:  'Fetching your Basecamp check-ins. Result coming shortly — do not call this tool again.',
   answer_basecamp_checkin:'Submitting your check-in answer.',
+  list_drive_files:       'Checking your Drive files. Result coming shortly.',
+  upload_to_drive:        'Uploading to Drive.',
 };
 
 function getAck(toolName: string): string {
@@ -160,6 +192,14 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
   // SSE connection refs
   const sessionIdRef = useRef<string>(makeSessionId());
   const sseRef = useRef<EventSource | null>(null);
+
+  /**
+   * Task IDs that belong to AWAITED tools.
+   * When their SSE result arrives, it is injected with isContext=false
+   * (turnComplete=true) so Gemini speaks the result immediately.
+   * Background task IDs are NOT in this set — they use isContext=true.
+   */
+  const awaitedTaskIds = useRef<Set<string>>(new Set());
 
   const { canSendRealtimeInput, canSendToolResponse, addToolCall, removeToolCall, currentState, transitionTo } = useTurnState();
 
@@ -245,15 +285,27 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
         ));
 
         const result = event.result ?? '';
-        // Use a short preview (120 chars) to prevent Gemini from seeing raw IDs and
+        // Use a short preview to prevent Gemini from seeing raw IDs and
         // auto-chaining additional tool calls, which causes "Operation is not implemented" crashes.
         const text = event.status === 'done'
           ? `[${event.tool_name} result] ${result.slice(0, 1500)}`
           : `Task failed: ${event.tool_name} — ${result.slice(0, 400)}`;
 
-        // isContext: true — background result, inject without ending the turn so the
-        // real-time audio session is not disrupted (see delivery loop for details).
-        pendingResults.current.push({ toolName: event.tool_name, text, timestamp: Date.now(), isContext: true });
+        // AWAITED tasks: inject with isContext=false (turnComplete=true) so Gemini
+        // responds immediately with the result — the user was waiting for it.
+        // BACKGROUND tasks: inject with isContext=true (turnComplete=false) as
+        // silent context — the user has moved on.
+        const isAwaited = awaitedTaskIds.current.has(event.task_id);
+        if (isAwaited) {
+          awaitedTaskIds.current.delete(event.task_id);
+          console.log(`[ToolRouter] SSE awaited result for ${event.tool_name} — will trigger immediate Gemini response`);
+        }
+        pendingResults.current.push({
+          toolName: event.tool_name,
+          text,
+          timestamp: Date.now(),
+          isContext: !isAwaited,  // false = turnComplete:true = Gemini speaks; true = silent context
+        });
       } catch (err) {
         console.error('[ToolRouter] Failed to parse SSE event:', err);
       }
@@ -322,28 +374,26 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
 
       if (allCalls.length === 0) return;
 
-      const fastCalls = allCalls.filter((fc: any) => !getToolMeta(fc.name).isBackground);
-      const slowCalls = allCalls.filter((fc: any) => getToolMeta(fc.name).isBackground);
+      // Three-tier classification
+      const inlineCalls     = allCalls.filter((fc: any) => getToolMeta(fc.name).category === 'inline');
+      const awaitedCalls    = allCalls.filter((fc: any) => getToolMeta(fc.name).category === 'awaited');
+      const backgroundCalls = allCalls.filter((fc: any) => getToolMeta(fc.name).category === 'background');
 
-      slowCalls.sort((a: any, b: any) =>
+      // Sort background by estimated duration (SJF — shortest first for queue priority)
+      backgroundCalls.sort((a: any, b: any) =>
         getToolMeta(a.name).estimatedSeconds - getToolMeta(b.name).estimatedSeconds
       );
 
-      // Register all calls with turn state
+      // Register all calls with turn state machine
       allCalls.forEach((fc: any) => addToolCall(fc.id));
 
-      // ── Fast/foreground calls ─────────────────────────────────────────────
-      // Wait for real result, then send it AS the toolResponse.
-      // Each call runs in an isolated async closure with try/catch/finally so
-      // removeToolCall is ALWAYS called — even if the tool throws, the backend
-      // is down, or the send itself fails. Without this guarantee the state
-      // machine gets stuck in TOOL_EXECUTING and the session appears frozen.
-      fastCalls.forEach((fc: any) => {
+      // ── INLINE calls ───────────────────────────────────────────────────────
+      // Execute synchronously, send real result as toolResponse.
+      // Each runs in an isolated async closure; removeToolCall always fires.
+      inlineCalls.forEach((fc: any) => {
         (async () => {
           let output = '';
 
-          // Step 1 — execute; translate any failure into a plain string so
-          // Gemini always receives a well-formed, non-empty toolResponse.
           try {
             const result = await bridge.executeTool(fc.name, fc.args);
             if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); return; }
@@ -352,7 +402,7 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
             } else {
               const data = result?.result ?? result;
               const s = typeof data === 'string' ? data : JSON.stringify(data);
-              output = s || `${fc.name} completed.`;  // never send empty output
+              output = s || `${fc.name} completed.`;
             }
           } catch (err: any) {
             if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); return; }
@@ -360,34 +410,33 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
             console.error(`[ToolRouter] ${fc.name} threw:`, err);
           }
 
-          // Step 2 — send the response; removeToolCall in finally so it
-          // runs regardless of whether the send succeeds or fails.
           try {
-            console.log(`[ToolRouter] Fast result ready for ${fc.name} (${output.length} chars)`);
+            console.log(`[ToolRouter] Inline result ready for ${fc.name} (${output.length} chars)`);
             coordinatorRef.current?.addResponse(fc.id, {
               id: fc.id,
               name: fc.name,
               response: { output: output.substring(0, 3000) },
             });
-            // Null-safe await: if coordinator was torn down mid-flight, resolve immediately.
             await (coordinatorRef.current?.forceFlush() ?? Promise.resolve());
           } catch (sendErr: any) {
-            console.error(`[ToolRouter] Failed to send response for ${fc.name}:`, sendErr);
+            console.error(`[ToolRouter] Failed to send inline response for ${fc.name}:`, sendErr);
           } finally {
             removeToolCall(fc.id);
           }
         })().catch((err: any) => {
-          // Last-resort: catches anything thrown outside the try blocks above.
-          console.error(`[ToolRouter] Unexpected error in fast tool ${fc.name}:`, err);
+          console.error(`[ToolRouter] Unexpected error in inline tool ${fc.name}:`, err);
           removeToolCall(fc.id);
         });
       });
 
-      // ── Slow/background calls ─────────────────────────────────────────────
-      // ACK immediately (user doesn't wait), result arrives via SSE.
-      if (slowCalls.length > 0) {
+      // ── AWAITED calls ──────────────────────────────────────────────────────
+      // User is waiting for the result but the tool is slow (3-10s).
+      // ACK immediately as toolResponse → Gemini speaks "Checking your inbox."
+      // Execute in background via SSE queue → when done, inject result with
+      // isContext=false (turnComplete=true) so Gemini speaks it right away.
+      if (awaitedCalls.length > 0) {
         try {
-          slowCalls.forEach((fc: any) => {
+          awaitedCalls.forEach((fc: any) => {
             coordinatorRef.current?.addResponse(fc.id, {
               id: fc.id,
               name: fc.name,
@@ -396,13 +445,12 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
           });
           await (coordinatorRef.current?.forceFlush() ?? Promise.resolve());
         } catch (ackErr: any) {
-          console.error('[ToolRouter] Failed to send ACK for slow tools:', ackErr);
+          console.error('[ToolRouter] Failed to send ACK for awaited tools:', ackErr);
         } finally {
-          // Always release slow tool IDs so the state machine doesn't get stuck.
-          slowCalls.forEach((fc: any) => removeToolCall(fc.id));
+          awaitedCalls.forEach((fc: any) => removeToolCall(fc.id));
         }
 
-        for (const fc of slowCalls) {
+        for (const fc of awaitedCalls) {
           if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); continue; }
           try {
             const meta = getToolMeta(fc.name);
@@ -410,6 +458,8 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
               fc.name, fc.args || {}, sessionIdRef.current,
             );
             if (submitted) {
+              // Mark as awaited so SSE handler uses isContext=false (triggers speech)
+              awaitedTaskIds.current.add(submitted.task_id);
               setTasks(prev => [...prev, {
                 id: submitted.task_id,
                 description: fc.name,
@@ -419,20 +469,77 @@ export function ToolRouter({ client, setTasks }: ToolRouterProps) {
                 createdAt: new Date(),
               }]);
             } else {
-              // Fallback: inline execution, inject via pendingResults
+              // Fallback: inline execution, inject as awaited (isContext=false)
               bridge.executeTool(fc.name, fc.args).then((result: any) => {
                 const text = formatResultForInjection(fc.name, result);
-                if (text) pendingResults.current.push({ toolName: fc.name, text, timestamp: Date.now() });
+                if (text) pendingResults.current.push({ toolName: fc.name, text, timestamp: Date.now(), isContext: false });
               }).catch((err: any) => {
                 pendingResults.current.push({
                   toolName: fc.name,
                   text: `The ${fc.name} call failed: ${err?.message || 'unknown error'}.`,
                   timestamp: Date.now(),
+                  isContext: false,
                 });
               });
             }
           } catch (err: any) {
-            console.error(`[ToolRouter] Error submitting ${fc.name}:`, err);
+            console.error(`[ToolRouter] Error submitting awaited tool ${fc.name}:`, err);
+          }
+        }
+      }
+
+      // ── BACKGROUND calls ───────────────────────────────────────────────────
+      // Fire-and-forget writes / long research.
+      // ACK immediately, result injected as silent context (isContext=true).
+      if (backgroundCalls.length > 0) {
+        try {
+          backgroundCalls.forEach((fc: any) => {
+            coordinatorRef.current?.addResponse(fc.id, {
+              id: fc.id,
+              name: fc.name,
+              response: { output: getAck(fc.name) },
+            });
+          });
+          await (coordinatorRef.current?.forceFlush() ?? Promise.resolve());
+        } catch (ackErr: any) {
+          console.error('[ToolRouter] Failed to send ACK for background tools:', ackErr);
+        } finally {
+          backgroundCalls.forEach((fc: any) => removeToolCall(fc.id));
+        }
+
+        for (const fc of backgroundCalls) {
+          if (cancelledCalls.has(fc.id)) { cancelledCalls.delete(fc.id); continue; }
+          try {
+            const meta = getToolMeta(fc.name);
+            const submitted = await bridge.submitBackgroundTool(
+              fc.name, fc.args || {}, sessionIdRef.current,
+            );
+            if (submitted) {
+              // NOT added to awaitedTaskIds — SSE handler will use isContext=true
+              setTasks(prev => [...prev, {
+                id: submitted.task_id,
+                description: fc.name,
+                toolName: fc.name,
+                estimatedSeconds: meta.estimatedSeconds,
+                status: 'pending',
+                createdAt: new Date(),
+              }]);
+            } else {
+              // Fallback: inline execution, inject as background context
+              bridge.executeTool(fc.name, fc.args).then((result: any) => {
+                const text = formatResultForInjection(fc.name, result);
+                if (text) pendingResults.current.push({ toolName: fc.name, text, timestamp: Date.now(), isContext: true });
+              }).catch((err: any) => {
+                pendingResults.current.push({
+                  toolName: fc.name,
+                  text: `The ${fc.name} call failed: ${err?.message || 'unknown error'}.`,
+                  timestamp: Date.now(),
+                  isContext: true,
+                });
+              });
+            }
+          } catch (err: any) {
+            console.error(`[ToolRouter] Error submitting background tool ${fc.name}:`, err);
           }
         }
       }
